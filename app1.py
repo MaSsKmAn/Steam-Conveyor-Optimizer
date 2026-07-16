@@ -134,10 +134,6 @@ SCM_HTML_ENGINE = """
     <main class="flex-1 relative rounded-2xl overflow-hidden border border-slate-700/50 min-h-[300px]">
         <canvas id="sim-canvas"></canvas>
         
-        <div class="absolute top-4 left-4 glass-panel px-4 py-2 rounded-lg pointer-events-none">
-            <p class="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Environment T_env</p>
-            <p class="text-2xl digital-font text-red-400" id="disp-tenv">--.-°C</p>
-        </div>
         <div class="absolute top-4 right-4 glass-panel px-4 py-2 rounded-lg pointer-events-none text-right">
             <p class="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Active Particles</p>
             <p class="text-2xl digital-font text-sky-400" id="disp-particles">0</p>
