@@ -939,9 +939,9 @@ with tab1:
                     
                     res_col1, res_col2, res_col3 = st.columns(3)
                     with res_col1:
-                        st.metric(label="Required Steam Flow Range", value=f"{steam_min_temp:.1f} - {steam_max_temp:.1f} kg/h")
+                        st.metric(label="Required Steam Flow Range", value=f"{steam_min_temp:.0f} - {steam_max_temp:.0f} kg/h")
                     with res_col2:
-                        st.metric(label="Tempering Water Range", value=f"{actual_water_low:.1f} - {actual_water_high:.1f} L/h")
+                        st.metric(label="Tempering Water Range", value=f"{actual_water_low:.0f} - {actual_water_high:.0f} L/h")
                     with res_col3:
                         st.metric(label="Water Added via Condensation", value=f"{cond_min:.1f} - {cond_max:.1f} L/h")
                 else:
@@ -949,16 +949,16 @@ with tab1:
                     
                     st.markdown(f"**🔴 Option A: Save the Enzymes (Hits {min_required_temp:.1f}°C, but destroys gluten):**")
                     col_a1, col_a2, col_a3 = st.columns(3)
-                    col_a1.metric("Required Steam", f"{steam_min_temp:.1f} kg/h")
-                    col_a2.metric("Required Water", f"{water_min_temp:.1f} L/h")
+                    col_a1.metric("Required Steam", f"{steam_min_temp:.0f} kg/h")
+                    col_a2.metric("Required Water", f"{water_min_temp:.0f} L/h")
                     col_a3.metric("Condensation Added", f"{cond_min:.2f} L/h")
                     
                     st.markdown("---")
                     
                     st.markdown(f"**🔵 Option B: Save the Gluten (Hits {max_allowed_temp:.1f}°C, but fails to kill enzymes):**")
                     col_b1, col_b2, col_b3 = st.columns(3)
-                    col_b1.metric("Required Steam", f"{steam_max_temp:.1f} kg/h")
-                    col_b2.metric("Required Water", f"{water_max_temp:.1f} L/h")
+                    col_b1.metric("Required Steam", f"{steam_max_temp:.0f} kg/h")
+                    col_b2.metric("Required Water", f"{water_max_temp:.0f} L/h")
                     col_b3.metric("Condensation Added", f"{cond_max:.2f} L/h")
 
 # ------------------------------------------------------------------------------
