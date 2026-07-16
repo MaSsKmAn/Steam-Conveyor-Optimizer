@@ -1,13 +1,13 @@
 import streamlit as st
 import numpy as np
-from scipy.optimize import minimize, brentq, minimize_scalar
+from scipy.optimize import minimize, brentq, minimize_scalar, differential_evolution
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # ==============================================================================
 # 1. FIXED CONSTANTS & FACTORY DATA
 # ==============================================================================
-R = 8.314  # Universal Gas Constant (J/mol·K)
+R = 8.314  # Universal Gas Constant (J/mol K)
 
 BASE_PARAMS = {
     "Lipase": {"Eab": 45945.38, "beta": 0.801218, "dH": 117420.10, "dS": 365.4445},
@@ -15,7 +15,7 @@ BASE_PARAMS = {
 }
 
 ENZ_TRAIN_DATA = [
-    {"temp": 25.00, "moist": 9.40,  "Lipase": 0,     "Peroxidase": 0},
+    {"temp": 25.00, "moist": 9.40,  "Lipase": 0,      "Peroxidase": 0},
     {"temp": 27.23, "moist": 9.42,  "Lipase": -2.4,  "Peroxidase": -0.34},
     {"temp": 39.27, "moist": 9.63,  "Lipase": 5.05,  "Peroxidase": -0.13},
     {"temp": 52.48, "moist": 9.82,  "Lipase": 7.72,  "Peroxidase": 4.61},
@@ -28,8 +28,9 @@ ENZ_TRAIN_DATA = [
     {"temp": 83.73, "moist": 10.92, "Lipase": 84.56, "Peroxidase": 97.64}
 ]
 
-GLUT_TEST_TEMPS = np.array([68.0, 68.0, 62.0, 68.0, 65.0, 72.0, 69.0, 66.0, 59.0, 70.0])
-GLUT_TEST_GLUTENS = np.array([8.66, 4.50, 8.65, 7.86, 7.48, 3.35, 7.27, 8.77, 7.46, 8.3])
+# Updated 12-point dataset containing the lower temperature control benchmarks
+GLUT_TEST_TEMPS = np.array([68.0, 68.0, 62.0, 68.0, 65.0, 72.0, 69.0, 66.0, 59.0, 70.0, 38.0, 25.0])
+GLUT_TEST_GLUTENS = np.array([8.66, 4.50, 8.65, 7.86, 7.48, 3.35, 7.27, 8.77, 7.46, 8.30, 9.37, 9.08])
 
 # ==============================================================================
 # 2. CALIBRATION ENGINES (Cached for performance)
@@ -57,13 +58,14 @@ def calibrate_enzymes():
 
 @st.cache_data
 def calibrate_gluten():
+    # Global Differential Evolution optimizer with relaxed bounds
     def mse_glut(params):
         w_res, w_drop1, w_drop2, t1, t2, k1, k2 = params
         preds = w_res + (w_drop1 / (1.0 + np.exp(k1 * (GLUT_TEST_TEMPS - t1)))) + (w_drop2 / (1.0 + np.exp(k2 * (GLUT_TEST_TEMPS - t2))))
         return np.sqrt(np.mean((preds - GLUT_TEST_GLUTENS)**2))
 
-    bounds = [(1.0, 4.0), (0.1, 5.0), (0.1, 7.0), (50.0, 75.0), (70.0, 95.0), (0.1, 1.5), (0.1, 1.5)]
-    res = minimize(mse_glut, [3.0, 2.0, 4.0, 60.0, 80.0, 0.3, 0.4], bounds=bounds, method='L-BFGS-B')
+    bounds = [(1.0, 4.5), (0.1, 7.0), (0.1, 7.0), (50.0, 85.0), (50.0, 85.0), (0.05, 2.0), (0.05, 2.0)]
+    res = differential_evolution(mse_glut, bounds=bounds, strategy='best1bin', popsize=20, seed=42)
     return res.x
 
 def calibrate_system(wheat_grain_kg_h, wheat_moist_pct, wheat_after_temp_pct, water_added_L_h, atta_final_moist_pct):
@@ -104,7 +106,7 @@ def get_optimal_window(target_lipase, target_perox, target_gluten, moisture, enz
     return t_lip, t_pox, t_glut
 
 # ==============================================================================
-# 4. THERMODYNAMIC SOLVER
+# 4. THERMODYNAMIC SOLVERS
 # ==============================================================================
 def simulate_steamer(steam_rate, water_actual_L_h, efficiency, grain_rate_mt_h, rpm, inlet_temp, inlet_moist_pct):
     grain_kg_h = grain_rate_mt_h * 1000.0
@@ -185,14 +187,47 @@ def get_required_inputs_with_steam_moisture(target_temp, target_moist, moist_typ
 
     return opt_steam, opt_water, W_steam
 
+def predict_outcomes_from_inputs(steam_rate_kg_h, water_added_L_h, grain_rate_mt_h, rpm, inlet_temp, inlet_moist_pct, efficiency, moisture_loss_milling, enz_params, glut_params):
+    # 1. Thermodynamics
+    final_temp, water_from_steam_kg_h = simulate_steamer(
+        steam_rate_kg_h, water_added_L_h, efficiency, grain_rate_mt_h, rpm, inlet_temp, inlet_moist_pct
+    )
+
+    # 2. Corrected Mass Balance
+    grain_flow_kg_h = grain_rate_mt_h * 1000.0
+    inlet_moist_frac = inlet_moist_pct / 100.0
+    
+    water_initial = grain_flow_kg_h * inlet_moist_frac
+    water_effectively_absorbed = water_added_L_h * efficiency
+    
+    total_water_after_temp = water_initial + water_effectively_absorbed + water_from_steam_kg_h
+    total_mass_after_temp = grain_flow_kg_h + water_added_L_h + water_from_steam_kg_h
+    
+    tempered_moisture_frac = total_water_after_temp / total_mass_after_temp
+    tempered_moisture_pct = tempered_moisture_frac * 100.0
+    
+    final_atta_moisture_pct = tempered_moisture_pct - moisture_loss_milling
+
+    # 3. Biology
+    lipase_inact = predict_enzyme(final_temp, tempered_moisture_pct, "Lipase", enz_params)
+    perox_inact = predict_enzyme(final_temp, tempered_moisture_pct, "Peroxidase", enz_params)
+    gluten_retention = predict_gluten(final_temp, glut_params)
+
+    return {
+        "final_temperature_c": final_temp,
+        "tempered_wheat_moisture_pct": tempered_moisture_pct,
+        "final_atta_moisture_pct": final_atta_moisture_pct,
+        "lipase_inactivated_pct": lipase_inact,
+        "peroxidase_inactivated_pct": perox_inact,
+        "gluten_retained_pct": gluten_retention,
+        "steam_condensed_L_h": water_from_steam_kg_h
+    }
+
 # ==============================================================================
-# 5. VISUALIZATION ENGINE
+# 5. VISUALIZATION ENGINES
 # ==============================================================================
 def generate_plotly_fig(moisture, t_lip, t_pox, t_glut, target_l, target_p, target_g, enz_params, glut_params):
-    # Dynamically scale X-Axis to ensure points are never cut off
     max_t = max([100, t_lip or 0, t_pox or 0, t_glut or 0]) + 10
-    
-    # Convert NumPy array strictly to a Python list for Plotly compatibility
     temps_array = np.linspace(20, max_t, 300)
     temps = temps_array.tolist() 
     
@@ -202,12 +237,10 @@ def generate_plotly_fig(moisture, t_lip, t_pox, t_glut, target_l, target_p, targ
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-    # Explicitly bind the converted lists to the X and Y axes
     fig.add_trace(go.Scatter(x=temps, y=lip_vals, mode='lines', name='Lipase Inact.', line=dict(color='blue', width=2)), secondary_y=False)
     fig.add_trace(go.Scatter(x=temps, y=pox_vals, mode='lines', name='Peroxidase Inact.', line=dict(color='orange', width=2)), secondary_y=False)
     fig.add_trace(go.Scatter(x=temps, y=glut_vals, mode='lines', name='Gluten Retention', line=dict(color='purple', width=3, dash='dash')), secondary_y=True)
 
-    # Shaded operational windows
     min_required_temp = max(t_lip or 0, t_pox or 0) if (t_lip or t_pox) else None
     max_allowed_temp = t_glut
 
@@ -217,12 +250,10 @@ def generate_plotly_fig(moisture, t_lip, t_pox, t_glut, target_l, target_p, targ
         else:
             fig.add_vrect(x0=max_allowed_temp, x1=min_required_temp, fillcolor="red", opacity=0.15, layer="below", line_width=0, annotation_text="Conflict Zone")
 
-    # Target Horizontal Lines
     fig.add_hline(y=target_l, line_dash="dot", line_color="blue", opacity=0.4, secondary_y=False)
     fig.add_hline(y=target_p, line_dash="dot", line_color="orange", opacity=0.4, secondary_y=False)
     fig.add_hline(y=target_g, line_dash="dot", line_color="purple", opacity=0.4, secondary_y=True)
 
-    # Intersection markers
     if t_lip: fig.add_trace(go.Scatter(x=[t_lip], y=[target_l], mode='markers', name=f'Lipase Target ({t_lip:.1f}°C)', marker=dict(color='blue', size=12, symbol='x')), secondary_y=False)
     if t_pox: fig.add_trace(go.Scatter(x=[t_pox], y=[target_p], mode='markers', name=f'Perox Target ({t_pox:.1f}°C)', marker=dict(color='orange', size=12, symbol='x')), secondary_y=False)
     if t_glut: fig.add_trace(go.Scatter(x=[t_glut], y=[target_g], mode='markers', name=f'Gluten Limit ({t_glut:.1f}°C)', marker=dict(color='purple', size=12, symbol='x')), secondary_y=True)
@@ -240,140 +271,214 @@ def generate_plotly_fig(moisture, t_lip, t_pox, t_glut, target_l, target_p, targ
     fig.update_yaxes(title_text="Dry Gluten Retention (%)", range=[0, max(12, target_g + 2)], secondary_y=True)
     return fig
 
+
+def generate_simulation_fig(final_temp, moisture, lipase_val, perox_val, gluten_val, enz_params, glut_params):
+    max_t = max(100.0, final_temp + 15.0)
+    temps_array = np.linspace(20, max_t, 300)
+    temps = temps_array.tolist()
+    
+    lip_vals = [predict_enzyme(t, moisture, "Lipase", enz_params) for t in temps]
+    pox_vals = [predict_enzyme(t, moisture, "Peroxidase", enz_params) for t in temps]
+    glut_vals = [predict_gluten(t, glut_params) for t in temps]
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    fig.add_trace(go.Scatter(x=temps, y=lip_vals, mode='lines', name='Lipase Inact.', line=dict(color='blue', width=2)), secondary_y=False)
+    fig.add_trace(go.Scatter(x=temps, y=pox_vals, mode='lines', name='Peroxidase Inact.', line=dict(color='orange', width=2)), secondary_y=False)
+    fig.add_trace(go.Scatter(x=temps, y=glut_vals, mode='lines', name='Gluten Retention', line=dict(color='purple', width=3, dash='dash')), secondary_y=True)
+
+    # Add a bold vertical line marking exactly where the simulation landed
+    fig.add_vline(x=final_temp, line_width=2, line_dash="solid", line_color="red", annotation_text=f"Simulated Temp ({final_temp:.1f}°C)")
+
+    # Add markers at the exact predicted values
+    fig.add_trace(go.Scatter(x=[final_temp], y=[lipase_val], mode='markers', name=f'Lipase ({lipase_val:.1f}%)', marker=dict(color='blue', size=12, symbol='x')), secondary_y=False)
+    fig.add_trace(go.Scatter(x=[final_temp], y=[perox_val], mode='markers', name=f'Perox ({perox_val:.1f}%)', marker=dict(color='orange', size=12, symbol='x')), secondary_y=False)
+    fig.add_trace(go.Scatter(x=[final_temp], y=[gluten_val], mode='markers', name=f'Gluten ({gluten_val:.2f}%)', marker=dict(color='purple', size=12, symbol='x')), secondary_y=True)
+
+    fig.update_layout(
+        title=f"<b>Simulation Biological Outcomes</b><br><sup>Displaying enzyme decay and gluten retention at {moisture:.2f}% Tempered Moisture</sup>",
+        xaxis_title="Temperature (°C)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(t=80, b=40, l=40, r=40),
+        hovermode="x unified",
+        height=550
+    )
+    
+    fig.update_yaxes(title_text="Enzyme Inactivation (%)", range=[-5, 105], secondary_y=False)
+    fig.update_yaxes(title_text="Dry Gluten Retention (%)", range=[0, 12], secondary_y=True)
+    return fig
+
 # ==============================================================================
 # 6. STREAMLIT UI
 # ==============================================================================
 st.set_page_config(page_title="Integrated Plant Optimizer", layout="wide")
 
 st.title("🏭 Steam Conveyor Machine Optimizer")
-st.markdown("Calculate the exact temperature window required for biological targets and automatically resolve the necessary mechanical inputs (steam and water) to achieve them.")
+st.markdown("Calculate process minimums to achieve biological targets or predict what will happen with specific machine settings.")
 
 # --- SIDEBAR: CALIBRATION ---
 st.sidebar.header("⚙️ Mechanical Calibration")
 st.sidebar.markdown("Baseline factory trial data used to calculate tempering efficiency and milling loss.")
 cal_grain_flow = st.sidebar.number_input("Grain Flow (kg/h)", value=14000.0, step=100.0)
-cal_inlet_moist = st.sidebar.number_input("Inlet Moisture (%)", value=10.04, step=0.1)
-cal_water_added = st.sidebar.number_input("Water Added (L/h)", value=450.0, step=10.0)
+cal_inlet_moist = st.sidebar.number_input("Calibration Inlet Moisture (%)", value=10.04, step=0.1)
+cal_water_added = st.sidebar.number_input("Calibration Water Added (L/h)", value=450.0, step=10.0)
 cal_wheat_after_temp = st.sidebar.number_input("Wheat Moisture After Temp (%)", value=11.67, step=0.1)
 cal_atta_final = st.sidebar.number_input("Final Atta Moisture (%)", value=9.00, step=0.1)
 
-# Dynamically calculate mechanical efficiency
 sys_eff, sys_loss = calibrate_system(cal_grain_flow, cal_inlet_moist, cal_wheat_after_temp, cal_water_added, cal_atta_final)
 
 st.sidebar.markdown("---")
 st.sidebar.info(f"**Tempering Efficiency:** {sys_eff*100:.2f}%\n\n**Milling Moisture Loss:** {sys_loss:.2f}%")
 
-# Initialize digital twins
 enz_params = calibrate_enzymes()
 glut_params = calibrate_gluten()
 
-# --- MAIN PAGE: INPUTS ---
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("🧪 Biological Targets")
-    st.caption("Determine process minimums based on laboratory benchmarks.")
-    tgt_lipase = st.number_input("Desired Lipase Inactivation (%)", value=25.0, step=1.0)
-    tgt_perox = st.number_input("Desired Peroxidase Inactivation (%)", value=25.0, step=1.0)
-    tgt_gluten = st.number_input("Minimum Dry Gluten Retention (%)", value=7.50, step=0.1)
-    tgt_moisture = st.number_input("Target Final Atta Moisture (%)", value=10.7, step=0.1)
-
-with col2:
-    st.subheader("⚙️ Mechanical Operating Conditions")
-    st.caption("Current state of the production floor.")
-    curr_grain_rate = st.number_input("Grain Rate (MT/h)", value=5.0, step=0.5)
-    curr_rpm = st.number_input("Conveyor RPM", value=40.0, step=1.0)
-    curr_inlet_temp = st.number_input("Inlet Grain Temp (°C)", value=38.0, step=1.0)
-    curr_inlet_moist = st.number_input("Current Inlet Moisture (%)", value=10.04, step=0.1)
+# --- MAIN PAGE: SHARED MACHINE STATE ---
+st.subheader("⚙️ Current Operating Conditions")
+st.caption("These conditions apply to both the Optimization and Simulator modes below.")
+colA, colB, colC, colD = st.columns(4)
+curr_grain_rate = colA.number_input("Grain Rate (MT/h)", value=5.0, step=0.5)
+curr_rpm = colB.number_input("Conveyor RPM", value=40.0, step=1.0)
+curr_inlet_temp = colC.number_input("Inlet Grain Temp (°C)", value=38.0, step=1.0)
+curr_inlet_moist = colD.number_input("Inlet Moisture (%)", value=10.04, step=0.1)
 
 st.markdown("---")
 
-# --- MAIN PAGE: EXECUTION ---
-if st.button("🚀 Optimize Process & Calculate Mechanical Inputs", use_container_width=True):
-    with st.spinner("Simulating Biological Constraints & Solving Thermodynamics..."):
-        
-        # 1. Biological Optimization
-        t_lip, t_pox, t_glut = get_optimal_window(tgt_lipase, tgt_perox, tgt_gluten, tgt_moisture, enz_params, glut_params)
-        
-        # Render Graphical Result
-        fig = generate_plotly_fig(tgt_moisture, t_lip, t_pox, t_glut, tgt_lipase, tgt_perox, tgt_gluten, enz_params, glut_params)
-        st.plotly_chart(fig, use_container_width=True)
+# --- TABS FOR MODES ---
+tab1, tab2 = st.tabs(["🎯 Optimization Mode", "🔮 Simulator Mode"])
 
-        if t_lip is None or t_pox is None:
-            st.error("❌ Enzyme targets cannot be reached within realistic physical bounds (10-150°C).")
-        elif t_glut is None:
-            st.error("❌ Gluten target cannot be matched.")
-        else:
-            min_required_temp = max(t_lip, t_pox)
-            max_allowed_temp = t_glut
+# ------------------------------------------------------------------------------
+# TAB 1: OPTIMIZATION MODE
+# ------------------------------------------------------------------------------
+with tab1:
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("🧪 Biological Targets")
+        tgt_lipase = st.number_input("Desired Lipase Inactivation (%)", value=25.0, step=1.0, key="opt_lipase")
+        tgt_perox = st.number_input("Desired Peroxidase Inactivation (%)", value=25.0, step=1.0, key="opt_perox")
+        tgt_gluten = st.number_input("Minimum Dry Gluten Retention (%)", value=7.50, step=0.1, key="opt_gluten")
+    with col2:
+        st.subheader("💧 Moisture Targets")
+        tgt_moisture = st.number_input("Target Final Atta Moisture (%)", value=10.7, step=0.1, key="opt_moist")
+
+    if st.button("🚀 Optimize Process & Calculate Mechanical Inputs", use_container_width=True):
+        with st.spinner("Simulating Biological Constraints & Solving Thermodynamics..."):
             
-            # Display Window Results
-            if min_required_temp <= max_allowed_temp:
-                st.success(f"✅ **Valid Operational Window Found:** Target temperatures range from **{min_required_temp:.1f}°C** to **{max_allowed_temp:.1f}°C**.")
-                status = "Valid"
+            t_lip, t_pox, t_glut = get_optimal_window(tgt_lipase, tgt_perox, tgt_gluten, tgt_moisture, enz_params, glut_params)
+            
+            fig = generate_plotly_fig(tgt_moisture, t_lip, t_pox, t_glut, tgt_lipase, tgt_perox, tgt_gluten, enz_params, glut_params)
+            st.plotly_chart(fig, use_container_width=True)
+
+            if t_lip is None or t_pox is None:
+                st.error("❌ Enzyme targets cannot be reached within realistic physical bounds (10-150°C).")
+            elif t_glut is None:
+                st.error("❌ Gluten target cannot be matched.")
             else:
-                st.error(f"⚠️ **Conflict Zone Detected:** Minimum temp to kill enzymes is **{min_required_temp:.1f}°C**, but gluten degrades entirely by **{max_allowed_temp:.1f}°C**.")
-                status = "Conflict"
-
-            # 2. Thermodynamic Mass Balance Solver (LOWER LIMIT)
-            steam_min_temp, water_min_temp, cond_min = get_required_inputs_with_steam_moisture(
-                target_temp=min_required_temp, 
-                target_moist=tgt_moisture, 
-                moist_type='Atta', 
-                rpm=curr_rpm, 
-                grain_rate=curr_grain_rate, 
-                efficiency=sys_eff, 
-                moisture_loss=sys_loss, 
-                inlet_temp=curr_inlet_temp, 
-                inlet_moist_pct=curr_inlet_moist
-            )
-
-            # 3. Thermodynamic Mass Balance Solver (UPPER LIMIT)
-            steam_max_temp, water_max_temp, cond_max = get_required_inputs_with_steam_moisture(
-                target_temp=max_allowed_temp, 
-                target_moist=tgt_moisture, 
-                moist_type='Atta', 
-                rpm=curr_rpm, 
-                grain_rate=curr_grain_rate, 
-                efficiency=sys_eff, 
-                moisture_loss=sys_loss, 
-                inlet_temp=curr_inlet_temp, 
-                inlet_moist_pct=curr_inlet_moist
-            )
-
-            # Display Mechanical Outputs
-            st.subheader("⚙️ Recommended Mechanical Operating Ranges")
-            
-            if status == "Valid":
-                st.caption(f"Operate within these mechanical limits to maintain the temperature safely between **{min_required_temp:.1f}°C** (Lower Limit) and **{max_allowed_temp:.1f}°C** (Upper Limit).")
+                min_required_temp = max(t_lip, t_pox)
+                max_allowed_temp = t_glut
                 
-                # Sort values so they display properly as "Low - High"
-                actual_water_low = min(water_min_temp, water_max_temp)
-                actual_water_high = max(water_min_temp, water_max_temp)
-                
-                res_col1, res_col2, res_col3 = st.columns(3)
-                with res_col1:
-                    st.metric(label="Required Steam Flow Range", value=f"{steam_min_temp:.1f} - {steam_max_temp:.1f} kg/h")
-                with res_col2:
-                    st.metric(label="Tempering Water Range", value=f"{actual_water_low:.1f} - {actual_water_high:.1f} L/h")
-                with res_col3:
-                    st.metric(label="Water Added via Condensation", value=f"{cond_min:.1f} - {cond_max:.1f} L/h")
+                if min_required_temp <= max_allowed_temp:
+                    st.success(f"✅ **Valid Operational Window Found:** Target temperatures range from **{min_required_temp:.1f}°C** to **{max_allowed_temp:.1f}°C**.")
+                    status = "Valid"
+                else:
+                    st.error(f"⚠️ **Conflict Zone Detected:** Minimum temp to kill enzymes is **{min_required_temp:.1f}°C**, but gluten degrades entirely by **{max_allowed_temp:.1f}°C**.")
+                    status = "Conflict"
+
+                steam_min_temp, water_min_temp, cond_min = get_required_inputs_with_steam_moisture(
+                    target_temp=min_required_temp, target_moist=tgt_moisture, moist_type='Atta', 
+                    rpm=curr_rpm, grain_rate=curr_grain_rate, efficiency=sys_eff, 
+                    moisture_loss=sys_loss, inlet_temp=curr_inlet_temp, inlet_moist_pct=curr_inlet_moist
+                )
+
+                steam_max_temp, water_max_temp, cond_max = get_required_inputs_with_steam_moisture(
+                    target_temp=max_allowed_temp, target_moist=tgt_moisture, moist_type='Atta', 
+                    rpm=curr_rpm, grain_rate=curr_grain_rate, efficiency=sys_eff, 
+                    moisture_loss=sys_loss, inlet_temp=curr_inlet_temp, inlet_moist_pct=curr_inlet_moist
+                )
+
+                st.subheader("⚙️ Recommended Mechanical Operating Ranges")
+                if status == "Valid":
+                    st.caption(f"Operate within these mechanical limits to maintain the temperature safely between **{min_required_temp:.1f}°C** (Lower Limit) and **{max_allowed_temp:.1f}°C** (Upper Limit).")
                     
-                st.info("💡 **Note:** Hitting the upper limits of steam will result in more condensation, which automatically means you need slightly less liquid tempering water to hit your final moisture target.")
+                    actual_water_low = min(water_min_temp, water_max_temp)
+                    actual_water_high = max(water_min_temp, water_max_temp)
+                    
+                    res_col1, res_col2, res_col3 = st.columns(3)
+                    with res_col1:
+                        st.metric(label="Required Steam Flow Range", value=f"{steam_min_temp:.0f} - {steam_max_temp:.0f} kg/h")
+                    with res_col2:
+                        st.metric(label="Tempering Water Range", value=f"{actual_water_low:.0f} - {actual_water_high:.0f} L/h")
+                    with res_col3:
+                        st.metric(label="Water Added via Condensation", value=f"{cond_min:.1f} - {cond_max:.1f} L/h")
+                else:
+                    st.warning("Because your biological targets conflict, we are showing the mechanical inputs required for the two conflicting extremes.")
+                    
+                    st.markdown(f"**🔴 Option A: Save the Enzymes (Hits {min_required_temp:.1f}°C, but destroys gluten):**")
+                    col_a1, col_a2, col_a3 = st.columns(3)
+                    col_a1.metric("Required Steam", f"{steam_min_temp:.0f} kg/h")
+                    col_a2.metric("Required Water", f"{water_min_temp:.0f} L/h")
+                    col_a3.metric("Condensation Added", f"{cond_min:.2f} L/h")
+                    
+                    st.markdown("---")
+                    
+                    st.markdown(f"**🔵 Option B: Save the Gluten (Hits {max_allowed_temp:.1f}°C, but fails to kill enzymes):**")
+                    col_b1, col_b2, col_b3 = st.columns(3)
+                    col_b1.metric("Required Steam", f"{steam_max_temp:.0f} kg/h")
+                    col_b2.metric("Required Water", f"{water_max_temp:.0f} L/h")
+                    col_b3.metric("Condensation Added", f"{cond_max:.2f} L/h")
+
+# ------------------------------------------------------------------------------
+# TAB 2: SIMULATOR MODE
+# ------------------------------------------------------------------------------
+with tab2:
+    st.subheader("🕹️ Machine Inputs")
+    st.caption("Input your desired steam and water rates to predict what will happen to the grain.")
+    sim_col1, sim_col2 = st.columns(2)
+    with sim_col1:
+        sim_steam = st.number_input("Steam Added (kg/h)", value=250.0, step=10.0, key="sim_steam")
+    with sim_col2:
+        sim_water = st.number_input("Tempering Water Added (L/h)", value=150.0, step=10.0, key="sim_water")
+
+    if st.button("🔬 Run Forward Simulation", use_container_width=True):
+        with st.spinner("Calculating physical state and biological outcomes..."):
             
-            else:
-                st.warning("Because your biological targets conflict, we are showing the mechanical inputs required for the two conflicting extremes.")
-                
-                st.markdown(f"**🔴 Option A: Save the Enzymes (Hits {min_required_temp:.1f}°C, but destroys gluten):**")
-                col_a1, col_a2, col_a3 = st.columns(3)
-                col_a1.metric("Required Steam", f"{steam_min_temp:.1f} kg/h")
-                col_a2.metric("Required Water", f"{water_min_temp:.1f} L/h")
-                col_a3.metric("Condensation Added", f"{cond_min:.2f} L/h")
-                
-                st.markdown("---")
-                
-                st.markdown(f"**🔵 Option B: Save the Gluten (Hits {max_allowed_temp:.1f}°C, but fails to kill enzymes):**")
-                col_b1, col_b2, col_b3 = st.columns(3)
-                col_b1.metric("Required Steam", f"{steam_max_temp:.1f} kg/h")
-                col_b2.metric("Required Water", f"{water_max_temp:.1f} L/h")
-                col_b3.metric("Condensation Added", f"{cond_max:.2f} L/h")
+            results = predict_outcomes_from_inputs(
+                steam_rate_kg_h=sim_steam,
+                water_added_L_h=sim_water,
+                grain_rate_mt_h=curr_grain_rate,
+                rpm=curr_rpm,
+                inlet_temp=curr_inlet_temp,
+                inlet_moist_pct=curr_inlet_moist,
+                efficiency=sys_eff,
+                moisture_loss_milling=sys_loss,
+                enz_params=enz_params,
+                glut_params=glut_params
+            )
+            
+            # --- Render Graphs ---
+            sim_fig = generate_simulation_fig(
+                final_temp=results['final_temperature_c'], 
+                moisture=results['tempered_wheat_moisture_pct'], 
+                lipase_val=results['lipase_inactivated_pct'], 
+                perox_val=results['peroxidase_inactivated_pct'], 
+                gluten_val=results['gluten_retained_pct'], 
+                enz_params=enz_params, 
+                glut_params=glut_params
+            )
+            st.plotly_chart(sim_fig, use_container_width=True)
+
+            # --- Render Metrics ---
+            st.markdown("---")
+            st.subheader("📊 Predicted Physical State")
+            phys_1, phys_2, phys_3, phys_4 = st.columns(4)
+            phys_1.metric("Grain Temperature", f"{results['final_temperature_c']:.1f} °C")
+            phys_2.metric("Tempered Moisture", f"{results['tempered_wheat_moisture_pct']:.2f} %")
+            phys_3.metric("Final Atta Moisture", f"{results['final_atta_moisture_pct']:.2f} %")
+            phys_4.metric("Condensation Added", f"{results['steam_condensed_L_h']:.2f} L/h")
+            
+            st.markdown("---")
+            st.subheader("🧬 Predicted Biological Outcomes")
+            bio_1, bio_2, bio_3 = st.columns(3)
+            bio_1.metric("Lipase Inactivated", f"{results['lipase_inactivated_pct']:.1f} %")
+            bio_2.metric("Peroxidase Inactivated", f"{results['peroxidase_inactivated_pct']:.1f} %")
+            bio_3.metric("Dry Gluten Retained", f"{results['gluten_retained_pct']:.2f} %")
