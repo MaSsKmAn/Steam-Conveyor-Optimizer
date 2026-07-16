@@ -3,6 +3,547 @@ import numpy as np
 from scipy.optimize import minimize, brentq, minimize_scalar, differential_evolution
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import streamlit.components.v1 as components
+
+# ==============================================================================
+# 0. SCM VISUALIZATION ENGINE (HTML/JS)
+# ==============================================================================
+SCM_HTML_ENGINE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SCM Live Simulation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: #0f172a; 
+            color: #f8fafc;
+            /* Hide body scrollbars for iframe embedding */
+            margin: 0;
+            overflow: hidden;
+            height: 100vh;
+        }
+        .digital-font { font-family: 'JetBrains Mono', monospace; }
+        
+        .glass-panel { 
+            background: rgba(30, 41, 59, 0.7); 
+            border: 1px solid rgba(255,255,255,0.1); 
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+        }
+
+        /* Custom Range Slider */
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #38bdf8;
+            cursor: pointer;
+            margin-top: -6px;
+            box-shadow: 0 0 10px rgba(56, 189, 248, 0.5);
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: #334155;
+            border-radius: 2px;
+        }
+
+        /* Glowing Progress Rings - Fixed to fit inside boxes */
+        .circle-bg {
+            fill: none;
+            stroke: #1e293b;
+            stroke-width: 3;
+        }
+        .circle {
+            fill: none;
+            stroke-width: 3;
+            stroke-linecap: round;
+            transition: stroke-dasharray 0.3s ease-out;
+        }
+        .circle-blue { stroke: #3b82f6; filter: drop-shadow(0 0 4px #3b82f6); }
+        .circle-red { stroke: #ef4444; filter: drop-shadow(0 0 4px #ef4444); }
+        .circle-cyan { stroke: #06b6d4; filter: drop-shadow(0 0 4px #06b6d4); }
+        .circle-emerald { stroke: #10b981; filter: drop-shadow(0 0 4px #10b981); }
+        
+        #sim-canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at center, #1e293b 0%, #0f172a 100%);
+            border-radius: 1rem;
+            box-shadow: inset 0 0 50px rgba(0,0,0,0.5);
+        }
+    </style>
+</head>
+<body class="flex flex-col p-4 gap-4 box-border">
+
+    <!-- Header Controls -->
+    <header class="flex-shrink-0 grid grid-cols-1 md:grid-cols-6 gap-4 glass-panel rounded-2xl p-4 items-center">
+        <div class="col-span-1 md:col-span-2">
+            <h1 class="text-xl font-bold text-white tracking-wide">SCM Live Simulation</h1>
+            <p class="text-xs text-emerald-400 mt-1 font-semibold">Live Particle & Conditioning Physics</p>
+        </div>
+        
+        <div class="col-span-1 md:col-span-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div class="flex flex-col">
+                <div class="flex justify-between">
+                    <label class="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Wheat (MT/h)</label>
+                    <span id="lbl-grain" class="text-[10px] font-bold text-white digital-font">14.0</span>
+                </div>
+                <input type="range" id="in-grain" min="2.0" max="20.0" step="0.5" value="14.0" class="mt-1">
+            </div>
+            <div class="flex flex-col">
+                <div class="flex justify-between">
+                    <label class="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Speed (RPM)</label>
+                    <span id="lbl-rpm" class="text-[10px] font-bold text-amber-400 digital-font">40</span>
+                </div>
+                <input type="range" id="in-rpm" min="10" max="80" step="1" value="40" class="mt-1">
+            </div>
+            <div class="flex flex-col">
+                <div class="flex justify-between">
+                    <label class="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Steam (kg/h)</label>
+                    <span id="lbl-steam" class="text-[10px] font-bold text-red-400 digital-font">265</span>
+                </div>
+                <input type="range" id="in-steam" min="0" max="500" step="5" value="265" class="mt-1">
+            </div>
+            <div class="flex flex-col">
+                <div class="flex justify-between">
+                    <label class="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Water Added (L/h)</label>
+                    <span id="lbl-water" class="text-[10px] font-bold text-blue-400 digital-font">450</span>
+                </div>
+                <input type="range" id="in-water" min="0" max="800" step="10" value="450" class="mt-1">
+            </div>
+        </div>
+    </header>
+
+    <!-- Canvas Simulation Area -->
+    <main class="flex-1 relative rounded-2xl overflow-hidden border border-slate-700/50 min-h-[300px]">
+        <canvas id="sim-canvas"></canvas>
+        
+        <div class="absolute top-4 left-4 glass-panel px-4 py-2 rounded-lg pointer-events-none">
+            <p class="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Environment T_env</p>
+            <p class="text-2xl digital-font text-red-400" id="disp-tenv">--.-°C</p>
+        </div>
+        <div class="absolute top-4 right-4 glass-panel px-4 py-2 rounded-lg pointer-events-none text-right">
+            <p class="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Active Particles</p>
+            <p class="text-2xl digital-font text-sky-400" id="disp-particles">0</p>
+        </div>
+    </main>
+
+    <!-- FIXED: KPI Footer Rings wrapped in perfectly sized rectangular boxes -->
+    <footer class="flex-shrink-0 grid grid-cols-2 md:grid-cols-4 gap-4">
+        
+        <div class="glass-panel rounded-xl p-3 flex flex-col items-center justify-center relative">
+            <div class="relative w-16 h-16 md:w-20 md:h-20 flex items-center justify-center">
+                <svg viewBox="0 0 36 36" class="absolute inset-0 w-full h-full">
+                    <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                    <path id="ring-base" class="circle circle-blue" stroke-dasharray="100, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                </svg>
+                <span id="out-base" class="text-sm md:text-lg font-bold digital-font text-white z-10">10.04</span>
+            </div>
+            <span class="text-[9px] uppercase font-bold text-blue-400 text-center leading-tight mt-2">Inlet Dry<br>Moisture</span>
+        </div>
+
+        <div class="glass-panel rounded-xl p-3 flex flex-col items-center justify-center relative">
+            <div class="relative w-16 h-16 md:w-20 md:h-20 flex items-center justify-center">
+                <svg viewBox="0 0 36 36" class="absolute inset-0 w-full h-full">
+                    <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                    <path id="ring-temp" class="circle circle-red" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                </svg>
+                <span id="out-temp" class="text-sm md:text-lg font-bold digital-font text-white z-10">--</span>
+            </div>
+            <span class="text-[9px] uppercase font-bold text-red-400 text-center leading-tight mt-2">SCM Outlet<br>Temp</span>
+        </div>
+
+        <div class="glass-panel rounded-xl p-3 flex flex-col items-center justify-center relative">
+            <div class="relative w-16 h-16 md:w-20 md:h-20 flex items-center justify-center">
+                <svg viewBox="0 0 36 36" class="absolute inset-0 w-full h-full">
+                    <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                    <path id="ring-tank" class="circle circle-cyan" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                </svg>
+                <span id="out-tank" class="text-sm md:text-lg font-bold digital-font text-white z-10">--</span>
+            </div>
+            <span class="text-[9px] uppercase font-bold text-cyan-400 text-center leading-tight mt-2">Conditioning<br>Moisture</span>
+        </div>
+
+        <div class="glass-panel rounded-xl p-3 flex flex-col items-center justify-center relative">
+            <div class="relative w-16 h-16 md:w-20 md:h-20 flex items-center justify-center">
+                <svg viewBox="0 0 36 36" class="absolute inset-0 w-full h-full">
+                    <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                    <path id="ring-atta" class="circle circle-emerald" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                </svg>
+                <span id="out-atta" class="text-sm md:text-lg font-bold digital-font text-white z-10">--</span>
+            </div>
+            <span class="text-[9px] uppercase font-bold text-emerald-400 text-center leading-tight mt-2">Final Atta<br>Moisture</span>
+        </div>
+
+    </footer>
+
+    <script>
+        // ==============================================================================
+        // 1. PHYSICS CONSTANTS & ENGINE
+        // ==============================================================================
+        const R = 8.314;
+        const A_s = 0.45;
+        const h_fg = 2100000.0;
+        const h_coeff = 152.0;
+        
+        const BASE_MOISTURE = 10.04;
+        const FACTORY_EFFICIENCY = 0.93; 
+        const MILLING_LOSS = 1.5;
+
+        let LUT = []; 
+        let T_env_global = 25.0;
+        let T_res_global = 27.0;
+        let UI_RESULTS = { outT: 0, tankM: 0, attaM: 0, scmM: 0 };
+
+        function updatePhysicsLUT() {
+            const grain_rate = parseFloat(document.getElementById('in-grain').value);
+            const water_L_h = parseFloat(document.getElementById('in-water').value);
+            const steam_rate = parseFloat(document.getElementById('in-steam').value);
+            const rpm = parseFloat(document.getElementById('in-rpm').value);
+
+            const grain_kg_h = grain_rate * 1000.0;
+
+            // 1. SCM Thermodynamic Euler Loop
+            T_res_global = 1087.6 / rpm;
+            const load_factor = (steam_rate / grain_kg_h) / 0.053;
+            T_env_global = steam_rate > 0 ? 30.0 + (116.8 - 30.0) * (1.0 - Math.exp(-1.2 * load_factor)) : 25.0;
+            document.getElementById('disp-tenv').innerText = T_env_global.toFixed(1) + '°C';
+
+            LUT = [];
+            let T = 25.0;
+            let m_w = (BASE_MOISTURE / 100.0) / (1.0 - (BASE_MOISTURE / 100.0));
+            const dt = T_res_global / 100.0;
+
+            for(let i=0; i<=100; i++) {
+                let M_pct = (m_w / (1.0 + m_w)) * 100.0;
+                let Cp = 1300.0 * (1.0 - M_pct/100.0) + 4184.0 * (M_pct/100.0);
+                
+                let dT = T_env_global - T;
+                if (dT > 0) {
+                    let q = h_coeff * A_s * dT;
+                    T += (q * dt) / Cp;
+                    m_w += (q * dt) / h_fg * 0.05; 
+                }
+                LUT.push({ temp: T, moist: M_pct });
+            }
+
+            UI_RESULTS.outT = LUT[100].temp;
+            UI_RESULTS.scmM = LUT[100].moist;
+
+            // 2. Downstream Conditioning Tank Mass Balance
+            const water_in_wheat = grain_kg_h * (UI_RESULTS.scmM / 100.0);
+            const water_absorbed = water_L_h * FACTORY_EFFICIENCY;
+            
+            const total_water_tank = water_in_wheat + water_absorbed;
+            const total_mass_tank = grain_kg_h + water_absorbed; 
+            
+            const tank_moist_pct = (total_water_tank / total_mass_tank) * 100.0;
+            
+            UI_RESULTS.tankM = tank_moist_pct;
+            UI_RESULTS.attaM = tank_moist_pct - MILLING_LOSS;
+            
+            updateDashboardRings();
+        }
+
+        // ==============================================================================
+        // 2. CANVAS ANIMATION ENGINE
+        // ==============================================================================
+        function tempToColor(t) {
+            let ratio = Math.max(0, Math.min((t - 25) / 95, 1.0));
+            let r = Math.round(253 - (253 - 120) * ratio);
+            let g = Math.round(230 - (230 - 20) * ratio);
+            let b = Math.round(138 - (138 - 20) * ratio);
+            return `rgb(${r}, ${g}, ${b})`;
+        }
+
+        const canvas = document.getElementById('sim-canvas');
+        const ctx = canvas.getContext('2d', { alpha: false });
+        let CW, CH, M_START, M_END, M_LEN, M_Y, M_HEIGHT, TANK_X, TANK_Y, TANK_W, TANK_H;
+
+        function resize() {
+            const rect = canvas.parentElement.getBoundingClientRect();
+            if(rect.width === 0) return;
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+            ctx.setTransform(1, 0, 0, 1, 0, 0); 
+            ctx.scale(dpr, dpr);
+            
+            CW = rect.width; CH = rect.height;
+
+            M_START = Math.max(80, CW * 0.1);
+            M_END = Math.min(CW - 150, CW * 0.85);
+            M_LEN = M_END - M_START;
+            M_Y = CH * 0.35; 
+            M_HEIGHT = Math.min(120, CH * 0.35);
+
+            TANK_W = 140;
+            TANK_H = CH - (M_Y + M_HEIGHT/2 + 60) - 20;
+            TANK_X = M_END - TANK_W/2 + 10;
+            TANK_Y = M_Y + M_HEIGHT/2 + 60;
+        }
+        window.addEventListener('resize', resize);
+
+        class Grain {
+            constructor() { this.active = false; }
+            reset() {
+                this.x = M_START - 20; 
+                this.radius = Math.random() * (M_HEIGHT/2 - 10); 
+                this.angle = Math.random() * Math.PI * 2;
+                this.y = M_Y + Math.sin(this.angle) * this.radius;
+                this.vx = 0; this.vy = 0;
+                this.size = 3.5 + Math.random() * 1.5;
+                this.active = true;
+                this.falling = false;
+                this.inTank = false;
+            }
+            update(dt, velocityX, rpm) {
+                if(!this.active) return;
+                if (!this.falling && !this.inTank) {
+                    this.x += velocityX * dt;
+                    this.angle += (rpm / 60) * Math.PI * 2 * dt;
+                    this.y = M_Y + Math.sin(this.angle) * this.radius;
+                    if (this.x >= M_END - 10) {
+                        this.falling = true;
+                        this.vx = Math.random() * 15; 
+                        this.vy = 20 + Math.random() * 50;
+                    }
+                } else if (this.falling) {
+                    this.x += this.vx * dt;
+                    this.y += this.vy * dt;
+                    this.vy += 600 * dt; 
+                    if (this.y > TANK_Y) {
+                        this.inTank = true;
+                        this.falling = false;
+                        this.vy = 10 + Math.random() * 30; 
+                    }
+                } else if (this.inTank) {
+                    this.y += this.vy * dt;
+                    this.x += (Math.random() - 0.5) * 10 * dt;
+                    if (this.y > TANK_Y + TANK_H - 10) this.active = false; 
+                }
+            }
+            draw() {
+                if(!this.active) return;
+                let progress = (!this.falling && !this.inTank) ? Math.max(0, Math.min((this.x - M_START) / M_LEN, 1.0)) : 1.0;
+                let index = Math.floor(progress * 100);
+                index = Math.max(0, Math.min(100, index));
+                const state = LUT[index] || LUT[0];
+                
+                ctx.fillStyle = tempToColor(state.temp);
+                ctx.strokeStyle = '#451a03'; 
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                const depthScale = !this.inTank && !this.falling ? 0.8 + (Math.cos(this.angle) * 0.4) : 1.0;
+                ctx.ellipse(this.x, this.y, (this.size * 1.5) * depthScale, this.size * depthScale, this.angle, 0, Math.PI * 2);
+                ctx.fill(); ctx.stroke();
+            }
+        }
+
+        class SteamParticle {
+            constructor() { this.active = false; }
+            reset() {
+                let bias = Math.pow(Math.random(), 2);
+                this.x = M_END - (bias * M_LEN);
+                this.y = M_Y + (Math.random() - 0.5) * 10;
+                this.vx = -(40 + Math.random() * 80); 
+                this.vy = (Math.random() - 0.5) * (M_HEIGHT * 1.5); 
+                this.life = 1.0;
+                this.decay = 0.008 + Math.random() * 0.015;
+                this.size = 10 + Math.random() * 20;
+                this.active = true;
+            }
+            update(dt) {
+                if(!this.active) return;
+                this.x += this.vx * dt; this.y += this.vy * dt;
+                this.life -= this.decay; this.size += 30 * dt; 
+                if(this.y < M_Y - M_HEIGHT/2) this.y = M_Y - M_HEIGHT/2;
+                if(this.y > M_Y + M_HEIGHT/2) this.y = M_Y + M_HEIGHT/2;
+                if(this.life <= 0 || this.x < M_START) this.active = false;
+            }
+            draw(steamRate) {
+                if(!this.active) return;
+                const intensity = Math.min(1.0, steamRate / 300);
+                if (intensity <= 0) return;
+                ctx.fillStyle = `rgba(254, 226, 226, ${this.life * 0.4 * intensity})`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        class WaterDroplet {
+            constructor() { this.active = false; }
+            reset() {
+                this.x = TANK_X + 20 + (Math.random() * (TANK_W - 40));
+                this.y = TANK_Y - 40;
+                this.vy = 100 + Math.random() * 100;
+                this.active = true;
+            }
+            update(dt) {
+                if(!this.active) return;
+                this.y += this.vy * dt;
+                if(this.y > TANK_Y + (Math.random() * TANK_H/2)) this.active = false;
+            }
+            draw(waterRate) {
+                if(!this.active || waterRate <= 0) return;
+                ctx.fillStyle = `rgba(56, 189, 248, 0.9)`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 2.5, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        const MAX_GRAINS = 600;
+        const grains = Array.from({length: MAX_GRAINS}, () => new Grain());
+        const steamParticles = Array.from({length: 200}, () => new SteamParticle());
+        const waterParticles = Array.from({length: 80}, () => new WaterDroplet());
+        let lastTime = performance.now();
+
+        function renderMachine() {
+            ctx.fillStyle = '#1e293b'; ctx.beginPath();
+            ctx.roundRect(M_START, M_Y - M_HEIGHT/2, M_LEN, M_HEIGHT, 10); ctx.fill();
+            ctx.strokeStyle = '#475569'; ctx.lineWidth = 4; ctx.stroke();
+
+            ctx.fillStyle = '#0f172a'; ctx.fillRect(M_START-20, M_Y - 8, M_LEN+40, 16);
+            ctx.fillStyle = '#000';
+            for(let i=M_START+20; i<M_END; i+=15) { ctx.beginPath(); ctx.arc(i, M_Y, 2, 0, Math.PI*2); ctx.fill(); }
+
+            ctx.fillStyle = '#1e293b'; ctx.beginPath();
+            ctx.roundRect(TANK_X, TANK_Y, TANK_W, TANK_H, 8); ctx.fill(); ctx.stroke();
+            ctx.fillStyle = '#0f172a'; ctx.fillRect(TANK_X + 10, TANK_Y + 10, TANK_W - 20, TANK_H - 20);
+        }
+
+        function renderPaddles(rpm, time) {
+            const numPaddles = Math.floor(M_LEN / 35); 
+            const shaftRad = M_HEIGHT / 2 - 10;
+            const paddleWidth = 14;
+            const rotationAngle = (rpm / 60) * Math.PI * 2 * (time / 1000);
+
+            for(let i=0; i<=numPaddles; i++) {
+                const x = M_START + i * 35;
+                if(x > M_END - 20) continue;
+                const phase = rotationAngle + (i * 0.8);
+                const yOffset = Math.sin(phase) * shaftRad;
+                const projectedWidth = Math.cos(phase) * paddleWidth;
+                
+                ctx.strokeStyle = '#334155'; ctx.lineWidth = 4; ctx.beginPath();
+                ctx.moveTo(x, M_Y); ctx.lineTo(x, M_Y + yOffset); ctx.stroke();
+                ctx.fillStyle = Math.cos(phase) > 0 ? '#94a3b8' : '#475569'; ctx.beginPath();
+                ctx.rect(x - Math.abs(projectedWidth)/2, M_Y + yOffset - 4, Math.abs(projectedWidth), 8); ctx.fill();
+            }
+        }
+
+        function renderInlets() {
+            ctx.fillStyle = '#eab308'; ctx.beginPath();
+            ctx.moveTo(M_START-30, M_Y - M_HEIGHT/2 - 70); ctx.lineTo(M_START+50, M_Y - M_HEIGHT/2 - 70);
+            ctx.lineTo(M_START+30, M_Y - M_HEIGHT/2); ctx.lineTo(M_START-10, M_Y - M_HEIGHT/2); ctx.fill();
+            
+            ctx.fillStyle = '#ef4444'; ctx.fillRect(M_END + 20, M_Y - 50, 16, 50); ctx.fillRect(M_END + 20, M_Y - 8, 30, 16);  
+            
+            ctx.fillStyle = '#475569'; ctx.beginPath();
+            ctx.moveTo(M_END - 20, M_Y + M_HEIGHT/2); ctx.lineTo(M_END + 20, M_Y + M_HEIGHT/2);
+            ctx.lineTo(M_END + 10, TANK_Y); ctx.lineTo(M_END - 30, TANK_Y); ctx.fill();
+
+            ctx.fillStyle = '#38bdf8'; ctx.fillRect(TANK_X + TANK_W/2 - 8, TANK_Y - 60, 16, 60);
+            
+            ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.beginPath();
+            ctx.roundRect(M_START, M_Y - M_HEIGHT/2 + 5, M_LEN, 20, 5); ctx.fill();
+        }
+
+        function animate(time) {
+            const dt = (time - lastTime) / 1000;
+            lastTime = time;
+
+            if(CW && CH) { ctx.fillStyle = '#0f172a'; ctx.fillRect(0, 0, CW, CH); }
+
+            const rpm = parseFloat(document.getElementById('in-rpm').value);
+            const steamRate = parseFloat(document.getElementById('in-steam').value);
+            const waterRate = parseFloat(document.getElementById('in-water').value);
+            const grainRate = parseFloat(document.getElementById('in-grain').value);
+
+            renderMachine();
+            
+            if(steamRate > 0) {
+                if(Math.random() < (steamRate/100)) { let dead = steamParticles.find(p => !p.active); if(dead) dead.reset(); }
+                steamParticles.forEach(p => { p.update(dt); p.draw(steamRate); });
+            }
+
+            renderPaddles(rpm, time);
+
+            if(waterRate > 0) {
+                if(Math.random() < (waterRate/150)) { let dead = waterParticles.find(p => !p.active); if(dead) dead.reset(); }
+                waterParticles.forEach(p => { p.update(dt); p.draw(waterRate); });
+            }
+
+            const targetActiveGrains = Math.min(MAX_GRAINS, (grainRate / 20) * MAX_GRAINS);
+            let activeCount = grains.filter(g => g.active).length;
+            let toSpawn = Math.min(6, targetActiveGrains - activeCount); 
+            if (toSpawn > 0 && rpm > 0 && grainRate > 0) {
+                let inactive = grains.filter(g => !g.active);
+                for(let i=0; i<toSpawn; i++) if (inactive[i]) inactive[i].reset();
+            }
+
+            const velocityX = rpm > 0 ? M_LEN / T_res_global : 0;
+            grains.forEach(g => { g.update(dt, velocityX, rpm); g.draw(); });
+
+            document.getElementById('disp-particles').innerText = activeCount;
+            renderInlets();
+
+            requestAnimationFrame(animate);
+        }
+
+        // ==============================================================================
+        // 3. UI UPDATE LOGIC
+        // ==============================================================================
+        function setRingProgress(id, percentage) {
+            const ring = document.getElementById(id);
+            if(ring) ring.style.strokeDasharray = `${percentage}, 100`;
+        }
+
+        function updateDashboardRings() {
+            document.getElementById('out-temp').innerText = UI_RESULTS.outT.toFixed(1);
+            setRingProgress('ring-temp', Math.min(100, (UI_RESULTS.outT / 120) * 100));
+
+            document.getElementById('out-tank').innerText = UI_RESULTS.tankM.toFixed(2);
+            setRingProgress('ring-tank', Math.max(0, Math.min(100, ((UI_RESULTS.tankM - 9) / 5) * 100)));
+
+            document.getElementById('out-atta').innerText = UI_RESULTS.attaM.toFixed(2);
+            setRingProgress('ring-atta', Math.max(0, Math.min(100, ((UI_RESULTS.attaM - 8) / 5) * 100)));
+        }
+
+        const inputs = ['in-grain', 'in-water', 'in-steam', 'in-rpm'];
+        inputs.forEach(id => {
+            document.getElementById(id).addEventListener('input', (e) => {
+                document.getElementById(id.replace('in-', 'lbl-')).innerText = parseFloat(e.target.value).toFixed(id==='in-rpm'||id==='in-water'?0:1);
+                updatePhysicsLUT();
+            });
+        });
+
+        resize();
+        updatePhysicsLUT();
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>
+"""
+
 
 # ==============================================================================
 # 1. FIXED CONSTANTS & FACTORY DATA
@@ -333,24 +874,22 @@ st.sidebar.info(f"**Tempering Efficiency:** {sys_eff*100:.2f}%\n\n**Milling Mois
 enz_params = calibrate_enzymes()
 glut_params = calibrate_gluten()
 
-# --- MAIN PAGE: SHARED MACHINE STATE ---
-st.subheader("⚙️ Current Operating Conditions")
-st.caption("These conditions apply to both the Optimization and Simulator modes below.")
-colA, colB, colC, colD = st.columns(4)
-curr_grain_rate = colA.number_input("Grain Rate (MT/h)", value=5.0, step=0.5)
-curr_rpm = colB.number_input("Conveyor RPM", value=40.0, step=1.0)
-curr_inlet_temp = colC.number_input("Inlet Grain Temp (°C)", value=38.0, step=1.0)
-curr_inlet_moist = colD.number_input("Inlet Moisture (%)", value=10.04, step=0.1)
-
-st.markdown("---")
-
 # --- TABS FOR MODES ---
-tab1, tab2 = st.tabs(["🎯 Optimization Mode", "🔮 Simulator Mode"])
+tab1, tab2, tab3 = st.tabs(["🎯 Optimization Mode", "🔮 Simulator Mode", "🎥 SCM Visualization"])
 
 # ------------------------------------------------------------------------------
 # TAB 1: OPTIMIZATION MODE
 # ------------------------------------------------------------------------------
 with tab1:
+    st.subheader("⚙️ Current Operating Conditions")
+    colA, colB, colC, colD = st.columns(4)
+    curr_grain_rate_opt = colA.number_input("Grain Rate (MT/h)", value=5.0, step=0.5, key="opt_grain")
+    curr_rpm_opt = colB.number_input("Conveyor RPM", value=40.0, step=1.0, key="opt_rpm")
+    curr_inlet_temp_opt = colC.number_input("Inlet Grain Temp (°C)", value=38.0, step=1.0, key="opt_temp")
+    curr_inlet_moist_opt = colD.number_input("Inlet Moisture (%)", value=10.04, step=0.1, key="opt_inlet_moist")
+    
+    st.markdown("---")
+    
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("🧪 Biological Targets")
@@ -386,14 +925,14 @@ with tab1:
 
                 steam_min_temp, water_min_temp, cond_min = get_required_inputs_with_steam_moisture(
                     target_temp=min_required_temp, target_moist=tgt_moisture, moist_type='Atta', 
-                    rpm=curr_rpm, grain_rate=curr_grain_rate, efficiency=sys_eff, 
-                    moisture_loss=sys_loss, inlet_temp=curr_inlet_temp, inlet_moist_pct=curr_inlet_moist
+                    rpm=curr_rpm_opt, grain_rate=curr_grain_rate_opt, efficiency=sys_eff, 
+                    moisture_loss=sys_loss, inlet_temp=curr_inlet_temp_opt, inlet_moist_pct=curr_inlet_moist_opt
                 )
 
                 steam_max_temp, water_max_temp, cond_max = get_required_inputs_with_steam_moisture(
                     target_temp=max_allowed_temp, target_moist=tgt_moisture, moist_type='Atta', 
-                    rpm=curr_rpm, grain_rate=curr_grain_rate, efficiency=sys_eff, 
-                    moisture_loss=sys_loss, inlet_temp=curr_inlet_temp, inlet_moist_pct=curr_inlet_moist
+                    rpm=curr_rpm_opt, grain_rate=curr_grain_rate_opt, efficiency=sys_eff, 
+                    moisture_loss=sys_loss, inlet_temp=curr_inlet_temp_opt, inlet_moist_pct=curr_inlet_moist_opt
                 )
 
                 st.subheader("⚙️ Recommended Mechanical Operating Ranges")
@@ -405,9 +944,9 @@ with tab1:
                     
                     res_col1, res_col2, res_col3 = st.columns(3)
                     with res_col1:
-                        st.metric(label="Required Steam Flow Range", value=f"{steam_min_temp:.0f} - {steam_max_temp:.0f} kg/h")
+                        st.metric(label="Required Steam Flow Range", value=f"{steam_min_temp:.1f} - {steam_max_temp:.1f} kg/h")
                     with res_col2:
-                        st.metric(label="Tempering Water Range", value=f"{actual_water_low:.0f} - {actual_water_high:.0f} L/h")
+                        st.metric(label="Tempering Water Range", value=f"{actual_water_low:.1f} - {actual_water_high:.1f} L/h")
                     with res_col3:
                         st.metric(label="Water Added via Condensation", value=f"{cond_min:.1f} - {cond_max:.1f} L/h")
                 else:
@@ -415,22 +954,31 @@ with tab1:
                     
                     st.markdown(f"**🔴 Option A: Save the Enzymes (Hits {min_required_temp:.1f}°C, but destroys gluten):**")
                     col_a1, col_a2, col_a3 = st.columns(3)
-                    col_a1.metric("Required Steam", f"{steam_min_temp:.0f} kg/h")
-                    col_a2.metric("Required Water", f"{water_min_temp:.0f} L/h")
+                    col_a1.metric("Required Steam", f"{steam_min_temp:.1f} kg/h")
+                    col_a2.metric("Required Water", f"{water_min_temp:.1f} L/h")
                     col_a3.metric("Condensation Added", f"{cond_min:.2f} L/h")
                     
                     st.markdown("---")
                     
                     st.markdown(f"**🔵 Option B: Save the Gluten (Hits {max_allowed_temp:.1f}°C, but fails to kill enzymes):**")
                     col_b1, col_b2, col_b3 = st.columns(3)
-                    col_b1.metric("Required Steam", f"{steam_max_temp:.0f} kg/h")
-                    col_b2.metric("Required Water", f"{water_max_temp:.0f} L/h")
+                    col_b1.metric("Required Steam", f"{steam_max_temp:.1f} kg/h")
+                    col_b2.metric("Required Water", f"{water_max_temp:.1f} L/h")
                     col_b3.metric("Condensation Added", f"{cond_max:.2f} L/h")
 
 # ------------------------------------------------------------------------------
 # TAB 2: SIMULATOR MODE
 # ------------------------------------------------------------------------------
 with tab2:
+    st.subheader("⚙️ Current Operating Conditions")
+    colA, colB, colC, colD = st.columns(4)
+    curr_grain_rate_sim = colA.number_input("Grain Rate (MT/h)", value=5.0, step=0.5, key="sim_grain")
+    curr_rpm_sim = colB.number_input("Conveyor RPM", value=40.0, step=1.0, key="sim_rpm")
+    curr_inlet_temp_sim = colC.number_input("Inlet Grain Temp (°C)", value=38.0, step=1.0, key="sim_temp")
+    curr_inlet_moist_sim = colD.number_input("Inlet Moisture (%)", value=10.04, step=0.1, key="sim_inlet_moist")
+    
+    st.markdown("---")
+
     st.subheader("🕹️ Machine Inputs")
     st.caption("Input your desired steam and water rates to predict what will happen to the grain.")
     sim_col1, sim_col2 = st.columns(2)
@@ -445,10 +993,10 @@ with tab2:
             results = predict_outcomes_from_inputs(
                 steam_rate_kg_h=sim_steam,
                 water_added_L_h=sim_water,
-                grain_rate_mt_h=curr_grain_rate,
-                rpm=curr_rpm,
-                inlet_temp=curr_inlet_temp,
-                inlet_moist_pct=curr_inlet_moist,
+                grain_rate_mt_h=curr_grain_rate_sim,
+                rpm=curr_rpm_sim,
+                inlet_temp=curr_inlet_temp_sim,
+                inlet_moist_pct=curr_inlet_moist_sim,
                 efficiency=sys_eff,
                 moisture_loss_milling=sys_loss,
                 enz_params=enz_params,
@@ -482,3 +1030,11 @@ with tab2:
             bio_1.metric("Lipase Inactivated", f"{results['lipase_inactivated_pct']:.1f} %")
             bio_2.metric("Peroxidase Inactivated", f"{results['peroxidase_inactivated_pct']:.1f} %")
             bio_3.metric("Dry Gluten Retained", f"{results['gluten_retained_pct']:.2f} %")
+
+# ------------------------------------------------------------------------------
+# TAB 3: VISUALIZATION MODE
+# ------------------------------------------------------------------------------
+with tab3:
+    st.subheader("🎥 Live Particle & Conditioning Physics")
+    st.caption("Adjust the sliders inside this window to view a real-time thermodynamic visualization.")
+    components.html(SCM_HTML_ENGINE, height=850, scrolling=False)
