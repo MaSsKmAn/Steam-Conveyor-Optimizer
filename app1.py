@@ -14,7 +14,7 @@ SCM_HTML_ENGINE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SCM Live Simulation</title>
+    <title>SCM Digital Twin</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
     
@@ -94,7 +94,7 @@ SCM_HTML_ENGINE = """
     <!-- Header Controls -->
     <header class="flex-shrink-0 grid grid-cols-1 md:grid-cols-6 gap-4 glass-panel rounded-2xl p-4 items-center">
         <div class="col-span-1 md:col-span-2">
-            <h1 class="text-xl font-bold text-white tracking-wide">SCM Live Simulation</h1>
+            <h1 class="text-xl font-bold text-white tracking-wide">SCM Digital Twin</h1>
             <p class="text-xs text-emerald-400 mt-1 font-semibold">Live Particle & Conditioning Physics</p>
         </div>
         
@@ -219,7 +219,6 @@ SCM_HTML_ENGINE = """
             T_res_global = 1087.6 / rpm;
             const load_factor = (steam_rate / grain_kg_h) / 0.053;
             T_env_global = steam_rate > 0 ? 30.0 + (116.8 - 30.0) * (1.0 - Math.exp(-1.2 * load_factor)) : 25.0;
-            document.getElementById('disp-tenv').innerText = T_env_global.toFixed(1) + '°C';
 
             LUT = [];
             let T = 25.0;
